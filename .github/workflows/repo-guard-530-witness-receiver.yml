@@ -1,4 +1,4 @@
-name: repo-guard #530 witness receiver
+name: "repo-guard #530 witness receiver"
 
 on:
   workflow_run:
