@@ -1,0 +1,55 @@
+name: "repo-guard #530 witness source"
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare exact target identity
+        env:
+          TARGET_SHA: ${{ github.sha }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          tag="repo-guard-530-witness-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+          jq -n \
+            --arg target_sha "$TARGET_SHA" \
+            --arg tag "$tag" \
+            --argjson source_run_id "$SOURCE_RUN_ID" \
+            --argjson source_run_attempt "$SOURCE_RUN_ATTEMPT" \
+            '{schema_version:1,target_sha:$target_sha,tag:$tag,source_run_id:$source_run_id,source_run_attempt:$source_run_attempt}' \
+            > target.json
+
+      - name: Upload exact target identity
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-guard-530-witness-target-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Publish disposable tag and Release with GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          tag="repo-guard-530-witness-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$tag" \
+            -f sha="$TARGET_SHA" >/dev/null
+          gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="$tag" \
+            -f name="$tag" \
+            -f body="Temporary repo-guard #530 workflow_run delivery witness." \
+            -F draft=false \
+            -F prerelease=false >/dev/null
