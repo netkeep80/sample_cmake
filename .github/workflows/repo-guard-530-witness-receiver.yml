@@ -1,0 +1,69 @@
+name: repo-guard #530 witness receiver
+
+on:
+  workflow_run:
+    workflows: ["repo-guard #530 witness source"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  verify:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify workflow_run delivery and exact target identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
+        run: |
+          set -euo pipefail
+
+          test "$SOURCE_REPOSITORY" = "$GITHUB_REPOSITORY"
+          test "$SOURCE_EVENT" = "push"
+          printf '%s' "$SOURCE_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
+
+          artifact_name="repo-guard-530-witness-target-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+          tmp="$(mktemp -d)"
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$artifact_name" \
+            --dir "$tmp"
+
+          jq -e \
+            --arg sha "$SOURCE_HEAD_SHA" \
+            --argjson run_id "$SOURCE_RUN_ID" \
+            --argjson run_attempt "$SOURCE_RUN_ATTEMPT" \
+            '.schema_version == 1
+             and .target_sha == $sha
+             and .source_run_id == $run_id
+             and .source_run_attempt == $run_attempt
+             and (.tag | type == "string")' \
+            "$tmp/target.json" >/dev/null
+
+          tag="$(jq -r '.tag' "$tmp/target.json")"
+          ref_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha')"
+          test "$ref_sha" = "$SOURCE_HEAD_SHA"
+
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+          jq -e '.draft == false and .prerelease == false' <<<"$release_json" >/dev/null
+          release_id="$(jq -r '.id' <<<"$release_json")"
+
+          {
+            echo "## repo-guard #530 disposable witness"
+            echo
+            echo "- workflow_run delivery: OK"
+            echo "- source run: $SOURCE_RUN_ID attempt $SOURCE_RUN_ATTEMPT"
+            echo "- target SHA: $SOURCE_HEAD_SHA"
+            echo "- disposable tag/Release: $tag"
+            echo "- exact tag -> target SHA: OK"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag"
